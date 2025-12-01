@@ -4,6 +4,7 @@ import random
 from GreedyAleatorio import procesar_greedy_aleatorio
 from Greedy import calcular_coste
 from Archivodedatos import lector
+from BusquedaTabu import busqueda_tabu_memetica
 
 
 
@@ -157,66 +158,6 @@ def cruce_OX2(p1: List[int], p2: List[int], mat1, mat2, rnd: random.Random) -> T
     return hijo, coste_hijo
 
 
-
-def cruce_MOC(p1: List[int], p2: List[int], mat1, mat2, rnd: random.Random) -> Tuple[List[int], int]:
-    """
-    Cruce MOC:
-    - Elegimos un punto de corte c (1..n-1)
-    - Definimos los elementos fijos: E1 = p1[0:c], E2 = p2[0:c]
-    - Hijo1: coloca los elementos de E1 en las posiciones de P2 donde aparecen
-    y rellena el resto siguiendo el orden de P2 (como OX2)
-    - Hijo2: coloca los elementos de E2 en las posiciones de P1 donde aparecen
-    y rellena el resto siguiendo el orden de P1 (como OX2)
-    """
-    n = len(p1)
-    c = rnd.randint(1, n - 1)  # punto de corte
-
-    # Elementos fijos
-    E1 = set(p1[:c])
-    E2 = set(p2[:c])
-
-    # --- Hijo 1 ---
-    hijo1 = [-1] * n
-    # Fijamos los elementos de E1 en las posiciones donde aparecen en p2
-    for idx, val in enumerate(p2):
-        if val in E1:
-            hijo1[idx] = val
-
-    # Rellenamos el resto siguiendo el orden de p2
-    idx = 0
-    for val in p2:
-        if val not in hijo1:
-            while hijo1[idx] != -1:
-                idx += 1
-            hijo1[idx] = val
-
-    # --- Hijo 2 ---
-    hijo2 = [-1] * n
-    # Fijamos los elementos de E2 en las posiciones donde aparecen en p1
-    for idx, val in enumerate(p1):
-        if val in E2:
-            hijo2[idx] = val
-
-    # Rellenamos el resto siguiendo el orden de p1
-    idx = 0
-    for val in p1:
-        if val not in hijo2:
-            while hijo2[idx] != -1:
-                idx += 1
-            hijo2[idx] = val
-
-    # Verificación de permutación válida
-    assert sorted(hijo1) == list(range(1, n + 1)), f"[MOC] Hijo1 no válido: {hijo1}"
-    assert sorted(hijo2) == list(range(1, n + 1)), f"[MOC] Hijo2 no válido: {hijo2}"
-
-    # Calcular costes
-    coste_hijo1 = calcular_coste(mat1, mat2, hijo1)
-    coste_hijo2 = calcular_coste(mat1, mat2, hijo2)
-
-    return (hijo1, coste_hijo1), (hijo2, coste_hijo2)
-
-
-
 def mutacion_2opt(ind: List[int], prob: float, rnd: random.Random) -> Tuple[List[int], bool]:
     """
     Operador de mutación 2-opt:
@@ -268,6 +209,10 @@ def evaluar_poblacion(poblacion: List[Tuple[List[int], int]]) -> dict:
 # Función principal: algoritmo generacional
 # ----------------------------
 
+# ----------------------------
+# Función principal: algoritmo generacional
+# ----------------------------
+
 def procesaGeneracional(
     archivo: str,
     tam_pob: int,
@@ -279,12 +224,14 @@ def procesaGeneracional(
     prob_cruce: float,
     prob_mutacion: float,
     max_evaluaciones: int,
-    tiempo_max: int,
     semilla: int,
-    nombre_cruce: str # ¡NUEVO PARÁMETRO!
+    # --- Parámetros de la BT (Hibridación) ---
+    tamano_lista_tabu: int, # Tenencia Tabú
+    bt_frec_profundidad: List[Tuple[int, int]] # Frecuencias y Profundidades
 ):
     """
-    Algoritmo evolutivo generacional (GEN) con un único operador de cruce (OX2 o MOC).
+    Algoritmo evolutivo generacional (GEN) HÍBRIDO con BT memética.
+    Utiliza SÓLO el operador de cruce OX2.
     """
     
     datos = lector(archivo)
@@ -300,16 +247,55 @@ def procesaGeneracional(
     poblacion.sort(key=lambda x: x[1])
     mejores_elite = poblacion[:elite]
     mejor_elite = poblacion[0]
+    
+    # Conjunto para rastrear las frecuencias de la BT ya alcanzadas
+    frecuencias_alcanzadas = set() 
 
     print(f"Población inicial generada (tamaño {tam_pob})")
     stats = evaluar_poblacion(poblacion)
     print(f"  Mejor: {stats['mejor']}, Peor: {stats['peor']}, Media: {stats['media']:.2f}")
 
     # 2. Bucle de evolución generacional
-    while evaluaciones < max_evaluaciones and (time.time() - inicio) < tiempo_max:
+    while evaluaciones < max_evaluaciones:
         gen += 1
         print(f"\n--- Generación {gen} ---")
 
+        # ----------------------------------------------------
+        # APLICACIÓN MEMÉTICA CONDICIONAL (BT al mejor individuo)
+        # ----------------------------------------------------
+        
+        # Iteramos sobre las frecuencias que AÚN NO se han alcanzado
+        for freq, iter_bt in bt_frec_profundidad:
+            if freq not in frecuencias_alcanzadas and evaluaciones >= freq:
+                
+                print(f"  [BT Activada] Evaluaciones >= {freq}. Profundidad: {iter_bt} iteraciones.")
+                
+                ind_a_mejorar, coste_original = poblacion[0] # El mejor individuo actual
+                
+                # Ejecución de la BT con la profundidad específica
+                ind_mejorado, coste_mejorado = busqueda_tabu_memetica(
+                    datos.mat1, datos.mat2, ind_a_mejorar, tamano_lista_tabu, iter_bt
+                )
+                
+                if coste_mejorado < coste_original:
+                    # Si mejora, reemplazamos al élite con la nueva solución
+                    poblacion[0] = (ind_mejorado, coste_mejorado)
+                    mejor_elite = poblacion[0]
+                    mejores_elite[0] = poblacion[0]
+                    print(f" Hibridación: Mejora de {coste_original} a **{coste_mejorado}**.")
+                else:
+                    print(f" Hibridación: No se encontró mejora (Coste: {coste_mejorado}).")
+                    
+                # Contabilizamos las evaluaciones de la BT.
+                evaluaciones += iter_bt
+                frecuencias_alcanzadas.add(freq) # Marcamos esta frecuencia como usada
+
+        # Si tras la BT ya alcanzamos el máximo, salimos
+        if evaluaciones >= max_evaluaciones:
+            break
+        
+        # ----------------------------------------------------
+        
         # a. Selección de padres
         padres = seleccionar_padres(poblacion, kBest, rnd)
         hijos = []
@@ -323,30 +309,22 @@ def procesaGeneracional(
             hijo1_por_cruce = False
             hijo2_por_cruce = False
             
-            # --- CRUCE CONDICIONAL (prob_cruce) ---
+            # --- CRUCE CONDICIONAL (prob_cruce): SÓLO OX2 ---
             if rnd.random() <= prob_cruce:
-                # Comprobamos qué operador de cruce usar (solo uno por ejecución)
-                if nombre_cruce == "OX2":
-                    hijo1, coste_hijo1 = cruce_OX2(padre1, padre2, datos.mat1, datos.mat2, rnd)
-                    hijo2, coste_hijo2 = cruce_OX2(padre2, padre1, datos.mat1, datos.mat2, rnd)
-                elif nombre_cruce == "MOC":
-                    (hijo1, coste_hijo1), (hijo2, coste_hijo2) = cruce_MOC(padre1, padre2, datos.mat1, datos.mat2, rnd)
-                else:
-                    # Este caso no debería ocurrir si el configurador es correcto
-                    raise ValueError(f"Operador de cruce no reconocido: {nombre_cruce}")
+                hijo1, coste_hijo1 = cruce_OX2(padre1, padre2, datos.mat1, datos.mat2, rnd)
+                hijo2, coste_hijo2 = cruce_OX2(padre2, padre1, datos.mat1, datos.mat2, rnd)
                 
                 hijo1_por_cruce = True
                 hijo2_por_cruce = True
             
-            
             # --- MUTACIÓN y EVALUACIÓN CONDICIONAL ---
-            
             # 1. Individuo 1
             hijo1_final, muto1 = mutacion_2opt(hijo1, prob_mutacion, rnd)
             
             if muto1 or hijo1_por_cruce:
                 if evaluaciones >= max_evaluaciones: break
                 
+                # CÁLCULO DE COSTE SOLO SI HUBO CRUCE O MUTACIÓN
                 coste_hijo1_final = calcular_coste(datos.mat1, datos.mat2, hijo1_final)
                 evaluaciones += 1
             else:
@@ -361,6 +339,7 @@ def procesaGeneracional(
             hijo2_final, muto2 = mutacion_2opt(hijo2, prob_mutacion, rnd)
 
             if muto2 or hijo2_por_cruce:
+                # CÁLCULO DE COSTE SOLO SI HUBO CRUCE O MUTACIÓN
                 coste_hijo2_final = calcular_coste(datos.mat1, datos.mat2, hijo2_final)
                 evaluaciones += 1
             else:
@@ -377,22 +356,21 @@ def procesaGeneracional(
         poblacion_candidata.sort(key=lambda x: x[1])
         poblacion = poblacion_candidata[:tam_pob]
 
-        # d. Protección del mejor élite
+        # d. Protección del mejor élite (SE ELIMINA la protección con kWorst ya que es redundante con E=1)
         if mejor_elite not in poblacion:
             torneo_perdedores = rnd.sample(poblacion, kWorst)
             peor_torneo = max(torneo_perdedores, key=lambda x: x[1]) 
             idx_peor = poblacion.index(peor_torneo)
             poblacion[idx_peor] = mejor_elite
-
+        
         # e. Actualizamos el élite
-        poblacion.sort(key=lambda x: x[1])
         mejores_elite = poblacion[:elite]
         mejor_elite = poblacion[0]
 
         # Estadísticas de la generación
         stats = evaluar_poblacion(poblacion)
-        print(f"  Mejor: {stats['mejor']}, Peor: {stats['peor']}, Media: {stats['media']:.2f}")
-        print(f"  Evaluaciones acumuladas: {evaluaciones}")
+        print(f"  Mejor: {stats['mejor']}, Peor: {stats['peor']}, Media: {stats['media']:.2f}")
+        print(f"  Evaluaciones acumuladas: {evaluaciones}")
 
     print("\n--- Fin de la ejecución ---")
     print(f"Generaciones completadas: {gen}")
@@ -402,6 +380,7 @@ def procesaGeneracional(
 
     return poblacion
 
+#Muestra sólo los resultados finales
 def resumenGeneracional(
     archivo: str,
     tam_pob: int,
@@ -413,47 +392,72 @@ def resumenGeneracional(
     prob_cruce: float,
     prob_mutacion: float,
     max_evaluaciones: int,
-    tiempo_max: int,
     semilla: int,
-    nombre_cruce: str  # ¡NUEVO PARÁMETRO!
+    # --- Parámetros de la BT (Hibridación) ---
+    tamano_lista_tabu: int,
+    bt_frec_profundidad: List[Tuple[int, int]]
 ):
     """
-    Algoritmo evolutivo generacional (GEN) para generar solo un resumen de los resultados finales.
-    Utiliza el operador de cruce especificado (OX2 o MOC).
+    Algoritmo evolutivo generacional (GEN) HÍBRIDO.
+    Condición de parada: SÓLO número máximo de evaluaciones.
     """
-    
-    # Se omiten las importaciones por brevedad, asumiendo que están al inicio del archivo.
     
     datos = lector(archivo)
     rnd = random.Random(semilla)
 
     # 1. Inicialización de la población
     poblacion = inicializar_poblacion(datos, tam_pob, k_greedy, porc_greedy, semilla)
-    evaluaciones = len(poblacion)  # Contamos las evaluaciones de la población inicial
+    evaluaciones = len(poblacion) 
+    
+    # Inicio cronómetro (Solo para reporte, no para parar)
     inicio = time.time()
     gen = 0
 
     # Identificamos el élite inicial
     poblacion.sort(key=lambda x: x[1])
-    mejores_elite = poblacion[:elite] # Guardamos los E mejores
-    mejor_elite = poblacion[0]        # El mejor individuo, para la protección
+    mejores_elite = poblacion[:elite] 
+    mejor_elite = poblacion[0] 
+    
+    frecuencias_alcanzadas = set() 
 
     print("------------------------------------------------------------------")
-    print(f"RESUMEN GENERACIONAL: {archivo} | Cruce: {nombre_cruce} (Semilla: {semilla})")
-    print(f"Población inicial generada (tamaño {tam_pob})")
+    print(f"RESUMEN GENERACIONAL HÍBRIDO: {archivo} (Semilla: {semilla})")
     stats = evaluar_poblacion(poblacion)
-    print(f"  Mejor Inicial: {stats['mejor']}, Peor Inicial: {stats['peor']}, Media Inicial: {stats['media']:.2f}")
+    print(f" Mejor Inicial: {stats['mejor']}, Media Inicial: {stats['media']:.2f}")
     print("------------------------------------------------------------------")
 
-    # 2. Bucle de evolución generacional (sin impresiones intermedias)
-    while evaluaciones < max_evaluaciones and (time.time() - inicio) < tiempo_max:
+    # 2. Bucle de evolución generacional
+    # ELIMINADO: and (time.time() - inicio) < tiempo_max
+    while evaluaciones < max_evaluaciones:
         gen += 1
+        
+        # --- APLICACIÓN MEMÉTICA CONDICIONAL ---
+        for freq, iter_bt in bt_frec_profundidad:
+            if freq not in frecuencias_alcanzadas and evaluaciones >= freq:
+                
+                ind_a_mejorar, coste_original = poblacion[0] 
+                
+                ind_mejorado, coste_mejorado = busqueda_tabu_memetica(
+                    datos.mat1, datos.mat2, ind_a_mejorar, tamano_lista_tabu, iter_bt
+                )
+                
+                if coste_mejorado < coste_original:
+                    poblacion[0] = (ind_mejorado, coste_mejorado)
+                    mejor_elite = poblacion[0]
+                    mejores_elite[0] = poblacion[0]
+                    
+                evaluaciones += iter_bt
+                frecuencias_alcanzadas.add(freq) 
 
+        # Verificación post-BT
+        if evaluaciones >= max_evaluaciones:
+            break
+        
         # a. Selección de padres
         padres = seleccionar_padres(poblacion, kBest, rnd)
         hijos = []
 
-        # b. Cruce y Mutación para generar la población descendiente
+        # b. Cruce y Mutación
         for idx, ((padre1, coste1), (padre2, coste2)) in enumerate(padres, start=1):
             
             hijo1, coste_hijo1 = padre1, coste1
@@ -462,56 +466,37 @@ def resumenGeneracional(
             hijo1_por_cruce = False
             hijo2_por_cruce = False
             
-            # --- CRUCE CONDICIONAL (prob_cruce) ---
+            # --- CRUCE OX2 ---
             if rnd.random() <= prob_cruce:
-                # Comprobamos qué operador de cruce usar
-                if nombre_cruce == "OX2":
-                    hijo1, coste_hijo1 = cruce_OX2(padre1, padre2, datos.mat1, datos.mat2, rnd)
-                    hijo2, coste_hijo2 = cruce_OX2(padre2, padre1, datos.mat1, datos.mat2, rnd)
-                elif nombre_cruce == "MOC":
-                    (hijo1, coste_hijo1), (hijo2, coste_hijo2) = cruce_MOC(padre1, padre2, datos.mat1, datos.mat2, rnd)
-                else:
-                    # En caso de error de configuración, lanzamos una excepción
-                    raise ValueError(f"Operador de cruce no reconocido: {nombre_cruce}")
-                
+                hijo1, coste_hijo1 = cruce_OX2(padre1, padre2, datos.mat1, datos.mat2, rnd)
+                hijo2, coste_hijo2 = cruce_OX2(padre2, padre1, datos.mat1, datos.mat2, rnd)
                 hijo1_por_cruce = True
                 hijo2_por_cruce = True
             
-            
-            # --- MUTACIÓN y EVALUACIÓN CONDICIONAL ---
-            
-            # 1. Individuo 1
+            # --- MUTACIÓN ---
             hijo1_final, muto1 = mutacion_2opt(hijo1, prob_mutacion, rnd)
-            
             if muto1 or hijo1_por_cruce:
                 if evaluaciones >= max_evaluaciones: break
-                
                 coste_hijo1_final = calcular_coste(datos.mat1, datos.mat2, hijo1_final)
                 evaluaciones += 1
             else:
                 coste_hijo1_final = coste_hijo1
-            
             hijos.append((hijo1_final, coste_hijo1_final))
 
-
-            # 2. Individuo 2
             if evaluaciones >= max_evaluaciones: break
             
             hijo2_final, muto2 = mutacion_2opt(hijo2, prob_mutacion, rnd)
-
             if muto2 or hijo2_por_cruce:
                 coste_hijo2_final = calcular_coste(datos.mat1, datos.mat2, hijo2_final)
                 evaluaciones += 1
             else:
                 coste_hijo2_final = coste_hijo2
-
             hijos.append((hijo2_final, coste_hijo2_final))
 
-        # Si el bucle de hijos se detuvo por la condición de parada
         if evaluaciones >= max_evaluaciones:
             break
         
-        # c. Reemplazo generacional completo con Elitismo
+        # c. Reemplazo generacional
         poblacion_candidata = hijos + mejores_elite 
         poblacion_candidata.sort(key=lambda x: x[1])
         poblacion = poblacion_candidata[:tam_pob]
@@ -529,7 +514,7 @@ def resumenGeneracional(
         mejor_elite = poblacion[0]
 
 
-    # 3. Impresión de los resultados finales
+    # Calculamos tiempo final solo para imprimirlo
     tiempo_total = time.time() - inicio
     stats = evaluar_poblacion(poblacion)
     
@@ -537,9 +522,9 @@ def resumenGeneracional(
     print(f"Generaciones completadas: {gen}")
     print(f"Evaluaciones totales: {evaluaciones}")
     print(f"Tiempo total (s): {tiempo_total:.4f}")
-    print(f"Mejor Coste Final: {stats['mejor']}")
+    print(f"Mejor Coste Final: **{stats['mejor']}**")
     print(f"Media Final: {stats['media']:.2f}")
-    print(f"Cruce utilizado: {nombre_cruce}")
+    print(f"Cruce utilizado: OX2 (Híbrido con BT)")
     print("------------------------------------------------------------------")
 
     return poblacion
@@ -548,7 +533,37 @@ def resumenGeneracional(
 # Main para ejecutar el ejemplo
 # ----------------------------
 if __name__ == "__main__":
+    
+    # Parámetros de la BT Memética (Requisito: 1000, 2000, 5000 evals con 10, 50, 100 iteraciones)
+    BT_FREC_PROFUNDIDAD = [
+        (1000, 10),
+        (2000, 50),
+        (5000, 100)
+    ]
+    TAMANO_LISTA_TABU = 10 # Tenencia Tabú (Valor asumido)
+
+    print("--- INICIO DE PROCESO GENERACIONAL HÍBRIDO ---")
+    
     poblacion_final = procesaGeneracional(
+        archivo="ford01.dat",
+        tam_pob=100,
+        porc_greedy=0.2,
+        k_greedy=5,
+        elite=1,                    
+        kBest=2,                   
+        kWorst=3,
+        prob_cruce=0.7,             
+        prob_mutacion=0.1,
+        max_evaluaciones=10000,
+        semilla=78282932,
+        # Parámetros de la BT
+        tamano_lista_tabu=TAMANO_LISTA_TABU,
+        bt_frec_profundidad=BT_FREC_PROFUNDIDAD
+    )
+    
+    # Si quieres ejecutar la versión resumen:
+    """
+    resumenGeneracional(
         archivo="ford01.dat",
         tam_pob=100,
         porc_greedy=0.2,
@@ -558,9 +573,9 @@ if __name__ == "__main__":
         kWorst=3,
         prob_cruce=0.7,
         prob_mutacion=0.1,
-        max_evaluaciones=50000,
-        tiempo_max=60,
+        max_evaluaciones=10000,
         semilla=78282932,
-        nombre_cruce="OX2"
+        tamano_lista_tabu=TAMANO_LISTA_TABU,
+        bt_frec_profundidad=BT_FREC_PROFUNDIDAD
     )
-
+    """
